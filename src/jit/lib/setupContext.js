@@ -227,9 +227,7 @@ function getTailwindConfig(configOrPath) {
   return [newConfig, null, hash(newConfig)]
 }
 
-let fileModifiedMap = new Map()
-
-function trackModified(files) {
+function trackModified(files, context) {
   let changed = false
 
   for (let file of files) {
@@ -239,11 +237,11 @@ function trackModified(files) {
     let pathname = parsed.href.replace(parsed.hash, '').replace(parsed.search, '')
     let newModified = fs.statSync(decodeURIComponent(pathname)).mtimeMs
 
-    if (!fileModifiedMap.has(file) || newModified > fileModifiedMap.get(file)) {
+    if (!context.fileModifiedMap.has(file) || newModified > context.fileModifiedMap.get(file)) {
       changed = true
     }
 
-    fileModifiedMap.set(file, newModified)
+    context.fileModifiedMap.set(file, newModified)
   }
 
   return changed
@@ -731,23 +729,27 @@ export default function setupContext(configOrPath, tailwindDirectives) {
       }
     }
 
-    let contextDependenciesChanged = trackModified([...contextDependencies])
-
     process.env.DEBUG && console.log('Source path:', sourcePath)
 
-    if (!contextDependenciesChanged) {
-      // If this file already has a context in the cache and we don't need to
-      // reset the context, return the cached context.
-      if (isConfigFile && contextMap.has(sourcePath)) {
-        return contextMap.get(sourcePath)
-      }
+    let existingContext
 
-      // If the config used already exists in the cache, return that.
-      if (configContextMap.has(tailwindConfigHash)) {
-        let context = configContextMap.get(tailwindConfigHash)
-        contextSourcesMap.get(context).add(sourcePath)
-        contextMap.set(sourcePath, context)
-        return context
+    if (isConfigFile && contextMap.has(sourcePath)) {
+      existingContext = contextMap.get(sourcePath)
+    }
+
+    if (configContextMap.has(tailwindConfigHash)) {
+      let context = configContextMap.get(tailwindConfigHash)
+      contextSourcesMap.get(context).add(sourcePath)
+      contextMap.set(sourcePath, context)
+      existingContext = context
+    }
+
+    // If there's already a context in the cache and we don't need to
+    // reset the context, return the cached context.
+    if (existingContext) {
+      let contextDependenciesChanged = trackModified([...contextDependencies], existingContext)
+      if (!contextDependenciesChanged) {
+        return existingContext
       }
     }
 
@@ -802,7 +804,12 @@ export default function setupContext(configOrPath, tailwindDirectives) {
         .map(({ raw, extension }) => ({ content: raw, extension })),
       variantMap: new Map(),
       stylesheetCache: null,
-      fileModifiedMap: new Map(),
+      fileModifiedMap: new Map(existingContext ? existingContext.fileModifiedMap : undefined),
+    }
+
+    if (!existingContext) {
+      // If we didn't have an existing modified map then populate it now.
+      trackModified([...contextDependencies], context)
     }
 
     // ---
